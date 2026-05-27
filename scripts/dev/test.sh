@@ -1,43 +1,50 @@
 #!/usr/bin/env bash
-# Spec Kit local test wrapper — chunked FIFO dispatch over pytest-xdist.
+# Spec Kit local test wrapper — parallel chunked FIFO over pytest-xdist.
 #
-# Design (matches the chunked-task / bounded-memory pattern):
-#   * Collect node ids once: `pytest --collect-only -q`.
-#   * Split the collection into fixed-size chunks (default 200 nodes).
-#   * Dispatch chunks sequentially as a FIFO queue; inside each chunk,
-#     pytest-xdist's `--dist=load` hands tests out one at a time to
-#     workers as they finish — natural FIFO progression with bounded
-#     in-flight memory.
-#   * Persist the cursor (next chunk index) to
-#     `.pytest_cache/fast-test-cursor` after every successful chunk so
-#     `--resume` continues exactly where a crash left off.
-#   * `--reset` clears the cursor; `--bench` reports wall-time only.
+# Design — "FIFO for our FIFO":
+#   Outer FIFO  : an ordered queue of chunks; OUTER_JOBS consumers pop in
+#                 dispatch order. `xargs -P` provides FIFO dispatch with
+#                 parallel consumers — workers may finish out of order but
+#                 chunks start in queue order.
+#   Inner FIFO  : within each chunk, pytest-xdist `--dist=load` hands tests
+#                 to INNER_JOBS workers one at a time (natural FIFO).
+#   Cursor      : `.pytest_cache/fast-test/completed-chunks` holds one
+#                 chunk index per line. `--resume` re-queues only the
+#                 chunks not in that set (no off-by-one if the test set
+#                 changes — unknown indices are simply skipped).
 #
 # Usage:
-#   scripts/dev/test.sh                          # full suite, chunked
+#   scripts/dev/test.sh                          # parallel chunked run
+#   scripts/dev/test.sh --outer 4 --inner 4
 #   scripts/dev/test.sh --chunk-size 100
-#   scripts/dev/test.sh --resume                 # continue from cursor
-#   scripts/dev/test.sh --reset                  # clear cursor
-#   scripts/dev/test.sh --bench                  # time only, no -v
+#   scripts/dev/test.sh --resume                 # skip completed chunks
+#   scripts/dev/test.sh --reset                  # clear cursor + logs
 #   scripts/dev/test.sh -- tests/test_merge.py   # pass-through to pytest
 
 set -euo pipefail
 
 REPO_ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/../.." && pwd)"
-CURSOR_FILE="$REPO_ROOT/.pytest_cache/fast-test-cursor"
+CACHE_DIR="$REPO_ROOT/.pytest_cache/fast-test"
+CURSOR_FILE="$CACHE_DIR/completed-chunks"
+NODES_FILE="$CACHE_DIR/nodes.txt"
+LOG_DIR="$CACHE_DIR/logs"
+LOCK_FILE="$CACHE_DIR/print.lock"
 
+NPROC="$(nproc 2>/dev/null || echo 4)"
 CHUNK_SIZE=200
+OUTER_JOBS=2
+INNER_JOBS=$(( NPROC / OUTER_JOBS )); (( INNER_JOBS < 2 )) && INNER_JOBS=2
 RESUME=0
 RESET=0
-BENCH=0
 PASSTHROUGH=()
 
 while (( $# )); do
     case "$1" in
         --chunk-size) CHUNK_SIZE="$2"; shift 2 ;;
+        --outer)      OUTER_JOBS="$2"; shift 2 ;;
+        --inner)      INNER_JOBS="$2"; shift 2 ;;
         --resume)     RESUME=1; shift ;;
         --reset)      RESET=1;  shift ;;
-        --bench)      BENCH=1;  shift ;;
         --)           shift; PASSTHROUGH+=("$@"); break ;;
         -h|--help)    sed -n '2,22p' "$0"; exit 0 ;;
         *)            PASSTHROUGH+=("$1"); shift ;;
@@ -45,59 +52,173 @@ while (( $# )); do
 done
 
 if (( RESET )); then
-    rm -f "$CURSOR_FILE"
-    echo "[fast-test] cursor cleared"
+    rm -rf "$CACHE_DIR"
+    echo "[fast-test] cache cleared ($CACHE_DIR)"
     exit 0
 fi
 
 cd "$REPO_ROOT"
-mkdir -p "$(dirname "$CURSOR_FILE")"
+mkdir -p "$LOG_DIR"
+: > "$LOCK_FILE"
 
-# 1. Collect node ids (override addopts so collection itself is serial/quiet).
+# flock isn't shipped in MSYS/Git Bash — fall back to a no-op when missing.
+# Output collisions are rare because each status line is a single short
+# printf well under PIPE_BUF.
+if command -v flock >/dev/null 2>&1; then
+    HAVE_FLOCK=1
+else
+    HAVE_FLOCK=0
+fi
+
+# stdbuf forces line-buffering on the prefix-sed so dots appear live; on
+# MSYS/Git Bash it isn't present, so fall back to plain sed.
+if command -v stdbuf >/dev/null 2>&1; then
+    SED_BIN="stdbuf -oL -eL sed"
+else
+    SED_BIN="sed"
+fi
+
+# ---------- 1. Collect node ids -------------------------------------------
 echo "[fast-test] collecting tests ..."
-mapfile -t NODES < <(
-    uv run pytest -o addopts= --collect-only -q "${PASSTHROUGH[@]}" \
-        2>/dev/null | grep -E '::' || true
-)
-TOTAL="${#NODES[@]}"
-if (( TOTAL == 0 )); then
-    echo "[fast-test] no tests collected" >&2
-    exit 1
-fi
-
-# 2. Determine starting cursor.
-START=0
-if (( RESUME )) && [[ -f "$CURSOR_FILE" ]]; then
-    START="$(cat "$CURSOR_FILE")"
-    echo "[fast-test] resuming from chunk cursor: test #$START"
-fi
-
-CHUNKS=$(( (TOTAL - START + CHUNK_SIZE - 1) / CHUNK_SIZE ))
-echo "[fast-test] $TOTAL tests · chunk=$CHUNK_SIZE · $CHUNKS chunk(s) queued · workers=auto"
-
-# 3. FIFO dispatch.
-T_START=$(date +%s)
-i="$START"
-chunk_idx=0
-while (( i < TOTAL )); do
-    end=$(( i + CHUNK_SIZE ))
-    (( end > TOTAL )) && end="$TOTAL"
-    chunk_idx=$(( chunk_idx + 1 ))
-    echo "[fast-test] chunk $chunk_idx/$CHUNKS  tests $((i+1))..$end"
-
-    PYTEST_FLAGS=(-o addopts= -n auto --dist=load --tb=short)
-    (( BENCH )) && PYTEST_FLAGS+=(-q) || PYTEST_FLAGS+=(--no-header -q)
-
-    if ! uv run pytest "${PYTEST_FLAGS[@]}" "${NODES[@]:i:CHUNK_SIZE}"; then
-        echo "[fast-test] chunk failed — cursor preserved at test #$i (use --resume to retry)"
-        echo "$i" > "$CURSOR_FILE"
+COLLECT_ERR="$CACHE_DIR/collect.err"
+if ! uv run pytest -o addopts= --collect-only -q "${PASSTHROUGH[@]}" \
+        2>"$COLLECT_ERR" | grep -E '::' > "$NODES_FILE.tmp"; then
+    # grep returning 1 (no matches) is the only acceptable failure path;
+    # any pytest failure leaves stderr in $COLLECT_ERR for diagnosis.
+    if [[ ! -s "$NODES_FILE.tmp" ]]; then
+        echo "[fast-test] no tests collected" >&2
+        [[ -s "$COLLECT_ERR" ]] && { echo "--- collection stderr ---"; cat "$COLLECT_ERR"; } >&2
         exit 1
     fi
+fi
+mv "$NODES_FILE.tmp" "$NODES_FILE"
+TOTAL="$(wc -l < "$NODES_FILE" | tr -d ' ')"
+NUM_CHUNKS=$(( (TOTAL + CHUNK_SIZE - 1) / CHUNK_SIZE ))
 
-    i="$end"
-    echo "$i" > "$CURSOR_FILE"
+# ---------- 2. Build pending chunk queue ----------------------------------
+declare -A DONE=()
+if (( RESUME )) && [[ -f "$CURSOR_FILE" ]]; then
+    while read -r d; do [[ -n "$d" ]] && DONE[$d]=1; done < "$CURSOR_FILE"
+fi
+PENDING=()
+for ((i=1; i<=NUM_CHUNKS; i++)); do
+    [[ -z "${DONE[$i]:-}" ]] && PENDING+=("$i")
 done
+PENDING_COUNT="${#PENDING[@]}"
+SKIPPED=$(( NUM_CHUNKS - PENDING_COUNT ))
 
-T_END=$(date +%s)
-rm -f "$CURSOR_FILE"
-echo "[fast-test] all $TOTAL tests passed in $((T_END - T_START))s"
+(( OUTER_JOBS > PENDING_COUNT && PENDING_COUNT > 0 )) && OUTER_JOBS="$PENDING_COUNT"
+
+printf '[fast-test] %d tests · %d chunks (size %d) · outer=%d inner=%d' \
+    "$TOTAL" "$NUM_CHUNKS" "$CHUNK_SIZE" "$OUTER_JOBS" "$INNER_JOBS"
+(( SKIPPED > 0 )) && printf ' · resume skips %d done' "$SKIPPED"
+printf '\n'
+
+if (( PENDING_COUNT == 0 )); then
+    echo "[fast-test] nothing to run"
+    rm -f "$CURSOR_FILE"
+    exit 0
+fi
+
+# ---------- 3. Per-chunk runner (executed by xargs workers) ---------------
+run_chunk() {
+    local idx="$1"
+    local start=$(( (idx - 1) * CHUNK_SIZE ))
+    local end=$(( start + CHUNK_SIZE ))
+    (( end > TOTAL )) && end=$TOTAL
+    local count=$(( end - start ))
+    local log="$LOG_DIR/chunk-$idx.log"
+    local t0 dt status summary
+    t0=$(date +%s)
+
+    if (( HAVE_FLOCK )); then
+        { flock 9
+          printf '  > chunk %3d/%-3d  START   %4d tests (#%d..#%d)\n' \
+              "$idx" "$NUM_CHUNKS" "$count" "$((start+1))" "$end"
+        } 9>"$LOCK_FILE"
+    else
+        printf '  > chunk %3d/%-3d  START   %4d tests (#%d..#%d)\n' \
+            "$idx" "$NUM_CHUNKS" "$count" "$((start+1))" "$end"
+    fi
+
+    # Stream pytest output live so the user sees per-test feedback as it
+    # happens. We tee to a per-chunk log for post-run inspection and prefix
+    # each line on stdout with [cNN] so interleaved chunks stay readable.
+    # `-v` gives one line per test (line-buffered), so prefix injection
+    # works without a pty.
+    local prefix
+    prefix="$(printf '[c%02d] ' "$idx")"
+    set +e
+    PYTHONUNBUFFERED=1 \
+        sed -n "$((start+1)),${end}p" "$NODES_FILE" \
+        | xargs -d '\n' -r uv run pytest -o addopts= \
+            -n "$INNER_JOBS" --dist=load --tb=short -v \
+            2>&1 \
+        | tee "$log" \
+        | $SED_BIN -e "s|^|$prefix|"
+    status="${PIPESTATUS[1]}"
+    set -e
+    dt=$(( $(date +%s) - t0 ))
+    # Prefer pytest's final '=== N passed[, M failed] in Xs ===' banner;
+    # fall back to any '[counts] passed/failed/...' line if banner is absent.
+    summary="$(grep -E '^=+ .*(passed|failed|error|skipped).* in [0-9.]+s =+$' "$log" \
+              | tail -1 | sed -E 's/^=+ *//; s/ *=+$//; s/ in [0-9.]+s$//')"
+    if [[ -z "$summary" ]]; then
+        summary="$(grep -E '[0-9]+ (passed|failed|error|skipped)' "$log" \
+                  | tail -1 | sed -E 's/^=+ *//; s/ *=+$//; s/ in [0-9.]+s$//')"
+    fi
+    [[ -z "$summary" ]] && summary="(no summary in log)"
+
+    _emit() {
+        if (( status == 0 )); then
+            printf '  + chunk %3d/%-3d  PASS    %-40s  %3ds\n' \
+                "$idx" "$NUM_CHUNKS" "$summary" "$dt"
+            echo "$idx" >> "$CURSOR_FILE"
+        else
+            printf '  X chunk %3d/%-3d  FAIL    %-40s  %3ds  -> %s\n' \
+                "$idx" "$NUM_CHUNKS" "$summary" "$dt" "$log"
+        fi
+    }
+    if (( HAVE_FLOCK )); then
+        { flock 9; _emit; } 9>"$LOCK_FILE"
+    else
+        _emit
+    fi
+
+    return "$status"
+}
+export -f run_chunk
+export REPO_ROOT CACHE_DIR CURSOR_FILE NODES_FILE LOG_DIR LOCK_FILE \
+       CHUNK_SIZE NUM_CHUNKS TOTAL INNER_JOBS HAVE_FLOCK SED_BIN
+
+# ---------- 4. Parallel FIFO dispatch -------------------------------------
+WALL_START=$(date +%s)
+DISPATCH_RC=0
+printf '%s\n' "${PENDING[@]}" \
+    | xargs -P "$OUTER_JOBS" -I{} bash -c 'run_chunk "$@"' _ {} \
+    || DISPATCH_RC=$?
+WALL=$(( $(date +%s) - WALL_START ))
+
+# ---------- 5. Tally ------------------------------------------------------
+COMPLETED=0
+[[ -f "$CURSOR_FILE" ]] && COMPLETED="$(sort -u "$CURSOR_FILE" | wc -l | tr -d ' ')"
+FAILED=$(( PENDING_COUNT - (COMPLETED - SKIPPED) ))
+
+printf '\n[fast-test] '
+if (( DISPATCH_RC == 0 && FAILED == 0 )); then
+    printf 'all %d chunks passed · wall %ds\n' "$NUM_CHUNKS" "$WALL"
+    rm -f "$CURSOR_FILE"
+    exit 0
+else
+    printf '%d/%d chunks passed · %d failed · wall %ds\n' \
+        "$COMPLETED" "$NUM_CHUNKS" "$FAILED" "$WALL"
+    echo "[fast-test] failing chunk logs:"
+    for log in "$LOG_DIR"/chunk-*.log; do
+        idx="$(basename "$log" .log | sed 's/^chunk-//')"
+        if [[ -z "${DONE[$idx]:-}" ]] && ! grep -qx "$idx" "$CURSOR_FILE" 2>/dev/null; then
+            echo "  - $log"
+        fi
+    done
+    echo "[fast-test] re-run with --resume to retry failed chunks only"
+    exit 1
+fi
