@@ -14,12 +14,12 @@
 #                 changes — unknown indices are simply skipped).
 #
 # Usage:
-#   scripts/dev/test.sh                          # parallel chunked run
-#   scripts/dev/test.sh --outer 4 --inner 4
-#   scripts/dev/test.sh --chunk-size 100
-#   scripts/dev/test.sh --resume                 # skip completed chunks
-#   scripts/dev/test.sh --reset                  # clear cursor + logs
-#   scripts/dev/test.sh -- tests/test_merge.py   # pass-through to pytest
+#   scripts/dev/spec-kit-test-glue.sh                          # parallel chunked run
+#   scripts/dev/spec-kit-test-glue.sh --outer 4 --inner 4
+#   scripts/dev/spec-kit-test-glue.sh --chunk-size 100
+#   scripts/dev/spec-kit-test-glue.sh --resume                 # skip completed chunks
+#   scripts/dev/spec-kit-test-glue.sh --reset                  # clear cursor + logs
+#   scripts/dev/spec-kit-test-glue.sh -- tests/test_merge.py   # pass-through to pytest
 
 set -euo pipefail
 
@@ -86,18 +86,34 @@ else
 fi
 
 # ---------- 1. Collect node ids -------------------------------------------
-echo "[fast-test] collecting tests ..."
+printf '[fast-test] collecting tests '
 COLLECT_ERR="$CACHE_DIR/collect.err"
+# Heartbeat so the user sees activity during pytest's silent collection.
+(
+    t=0
+    while sleep 2; do
+        t=$(( t + 2 ))
+        printf '.'
+        (( t % 10 == 0 )) && printf '(%ds)' "$t"
+    done
+) &
+COLLECT_HB=$!
+trap 'kill $COLLECT_HB 2>/dev/null || true' EXIT
 if ! uv run pytest -o addopts= --collect-only -q "${PASSTHROUGH[@]}" \
         2>"$COLLECT_ERR" | grep -E '::' > "$NODES_FILE.tmp"; then
     # grep returning 1 (no matches) is the only acceptable failure path;
     # any pytest failure leaves stderr in $COLLECT_ERR for diagnosis.
     if [[ ! -s "$NODES_FILE.tmp" ]]; then
+        kill $COLLECT_HB 2>/dev/null || true
+        printf '\n'
         echo "[fast-test] no tests collected" >&2
         [[ -s "$COLLECT_ERR" ]] && { echo "--- collection stderr ---"; cat "$COLLECT_ERR"; } >&2
         exit 1
     fi
 fi
+kill $COLLECT_HB 2>/dev/null || true
+trap - EXIT
+printf ' done\n'
 mv "$NODES_FILE.tmp" "$NODES_FILE"
 TOTAL="$(wc -l < "$NODES_FILE" | tr -d ' ')"
 NUM_CHUNKS=$(( (TOTAL + CHUNK_SIZE - 1) / CHUNK_SIZE ))
@@ -137,6 +153,9 @@ run_chunk() {
     local log="$LOG_DIR/chunk-$idx.log"
     local t0 dt status summary
     t0=$(date +%s)
+    # Mark this chunk active so the heartbeat watcher can list in-flight
+    # work even when no test lines are being emitted.
+    : > "$ACTIVE_DIR/$idx"
 
     if (( HAVE_FLOCK )); then
         { flock 9
@@ -191,19 +210,45 @@ run_chunk() {
     else
         _emit
     fi
+    rm -f "$ACTIVE_DIR/$idx"
 
     return "$status"
 }
 export -f run_chunk
-export REPO_ROOT CACHE_DIR CURSOR_FILE NODES_FILE LOG_DIR LOCK_FILE \
+ACTIVE_DIR="$CACHE_DIR/active"
+rm -rf "$ACTIVE_DIR"; mkdir -p "$ACTIVE_DIR"
+export REPO_ROOT CACHE_DIR CURSOR_FILE NODES_FILE LOG_DIR LOCK_FILE ACTIVE_DIR \
        CHUNK_SIZE NUM_CHUNKS TOTAL INNER_JOBS HAVE_FLOCK SED_BIN TEE_BIN STDBUF_LB
 
 # ---------- 4. Parallel FIFO dispatch -------------------------------------
 WALL_START=$(date +%s)
 DISPATCH_RC=0
+
+# In-flight heartbeat: every 15s, print which chunks are still running
+# and for how long. Keeps the console alive during slow chunks that
+# aren't currently emitting test lines (setup, teardown, long single test).
+(
+    while sleep 15; do
+        active=( "$ACTIVE_DIR"/* )
+        [[ -e "${active[0]}" ]] || continue
+        now=$(date +%s)
+        parts=()
+        for f in "${active[@]}"; do
+            idx="$(basename "$f")"
+            started=$(stat -c %Y "$f" 2>/dev/null || echo "$now")
+            parts+=("c${idx}=$((now - started))s")
+        done
+        printf '  ~ in-flight (%d): %s\n' "${#parts[@]}" "${parts[*]}"
+    done
+) &
+HEARTBEAT_PID=$!
+trap 'kill $HEARTBEAT_PID 2>/dev/null || true' EXIT
+
 printf '%s\n' "${PENDING[@]}" \
     | xargs -P "$OUTER_JOBS" -I{} bash -c 'run_chunk "$@"' _ {} \
     || DISPATCH_RC=$?
+kill $HEARTBEAT_PID 2>/dev/null || true
+trap - EXIT
 WALL=$(( $(date +%s) - WALL_START ))
 
 # ---------- 5. Tally ------------------------------------------------------
