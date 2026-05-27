@@ -224,11 +224,12 @@ export REPO_ROOT CACHE_DIR CURSOR_FILE NODES_FILE LOG_DIR LOCK_FILE ACTIVE_DIR \
 WALL_START=$(date +%s)
 DISPATCH_RC=0
 
-# In-flight heartbeat: every 15s, print which chunks are still running
+# In-flight heartbeat: every 5s, print which chunks are still running
 # and for how long. Keeps the console alive during slow chunks that
-# aren't currently emitting test lines (setup, teardown, long single test).
+# aren't currently emitting test lines (worker spinup, setup/teardown,
+# a long single test). Short interval so users never wonder if it froze.
 (
-    while sleep 15; do
+    while sleep 5; do
         active=( "$ACTIVE_DIR"/* )
         [[ -e "${active[0]}" ]] || continue
         now=$(date +%s)
