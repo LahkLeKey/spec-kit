@@ -70,12 +70,19 @@ else
     HAVE_FLOCK=0
 fi
 
-# stdbuf forces line-buffering on the prefix-sed so dots appear live; on
-# MSYS/Git Bash it isn't present, so fall back to plain sed.
+# stdbuf forces line-buffering through the pipeline so each PASSED/FAILED
+# line appears in the console as soon as pytest emits it (otherwise `tee`
+# and `sed` block-buffer when stdout is a pipe). MSYS/Git Bash lacks
+# stdbuf, so we degrade to plain tee/sed (still mostly live because the
+# downstream is a terminal).
 if command -v stdbuf >/dev/null 2>&1; then
+    STDBUF_LB="stdbuf -oL -eL"
     SED_BIN="stdbuf -oL -eL sed"
+    TEE_BIN="stdbuf -oL -eL tee"
 else
+    STDBUF_LB=""
     SED_BIN="sed"
+    TEE_BIN="tee"
 fi
 
 # ---------- 1. Collect node ids -------------------------------------------
@@ -154,7 +161,7 @@ run_chunk() {
         | xargs -d '\n' -r uv run pytest -o addopts= \
             -n "$INNER_JOBS" --dist=load --tb=short -v \
             2>&1 \
-        | tee "$log" \
+        | $TEE_BIN "$log" \
         | $SED_BIN -e "s|^|$prefix|"
     status="${PIPESTATUS[1]}"
     set -e
@@ -189,7 +196,7 @@ run_chunk() {
 }
 export -f run_chunk
 export REPO_ROOT CACHE_DIR CURSOR_FILE NODES_FILE LOG_DIR LOCK_FILE \
-       CHUNK_SIZE NUM_CHUNKS TOTAL INNER_JOBS HAVE_FLOCK SED_BIN
+       CHUNK_SIZE NUM_CHUNKS TOTAL INNER_JOBS HAVE_FLOCK SED_BIN TEE_BIN STDBUF_LB
 
 # ---------- 4. Parallel FIFO dispatch -------------------------------------
 WALL_START=$(date +%s)
