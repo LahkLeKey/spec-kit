@@ -153,9 +153,6 @@ run_chunk() {
     local log="$LOG_DIR/chunk-$idx.log"
     local t0 dt status summary
     t0=$(date +%s)
-    # Mark this chunk active so the heartbeat watcher can list in-flight
-    # work even when no test lines are being emitted.
-    : > "$ACTIVE_DIR/$idx"
 
     if (( HAVE_FLOCK )); then
         { flock 9
@@ -210,46 +207,19 @@ run_chunk() {
     else
         _emit
     fi
-    rm -f "$ACTIVE_DIR/$idx"
 
     return "$status"
 }
 export -f run_chunk
-ACTIVE_DIR="$CACHE_DIR/active"
-rm -rf "$ACTIVE_DIR"; mkdir -p "$ACTIVE_DIR"
-export REPO_ROOT CACHE_DIR CURSOR_FILE NODES_FILE LOG_DIR LOCK_FILE ACTIVE_DIR \
+export REPO_ROOT CACHE_DIR CURSOR_FILE NODES_FILE LOG_DIR LOCK_FILE \
        CHUNK_SIZE NUM_CHUNKS TOTAL INNER_JOBS HAVE_FLOCK SED_BIN TEE_BIN STDBUF_LB
 
 # ---------- 4. Parallel FIFO dispatch -------------------------------------
 WALL_START=$(date +%s)
 DISPATCH_RC=0
-
-# In-flight heartbeat: every 5s, print which chunks are still running
-# and for how long. Keeps the console alive during slow chunks that
-# aren't currently emitting test lines (worker spinup, setup/teardown,
-# a long single test). Short interval so users never wonder if it froze.
-(
-    while sleep 5; do
-        active=( "$ACTIVE_DIR"/* )
-        [[ -e "${active[0]}" ]] || continue
-        now=$(date +%s)
-        parts=()
-        for f in "${active[@]}"; do
-            idx="$(basename "$f")"
-            started=$(stat -c %Y "$f" 2>/dev/null || echo "$now")
-            parts+=("c${idx}=$((now - started))s")
-        done
-        printf '  ~ in-flight (%d): %s\n' "${#parts[@]}" "${parts[*]}"
-    done
-) &
-HEARTBEAT_PID=$!
-trap 'kill $HEARTBEAT_PID 2>/dev/null || true' EXIT
-
 printf '%s\n' "${PENDING[@]}" \
     | xargs -P "$OUTER_JOBS" -I{} bash -c 'run_chunk "$@"' _ {} \
     || DISPATCH_RC=$?
-kill $HEARTBEAT_PID 2>/dev/null || true
-trap - EXIT
 WALL=$(( $(date +%s) - WALL_START ))
 
 # ---------- 5. Tally ------------------------------------------------------
