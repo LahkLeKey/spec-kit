@@ -60,6 +60,7 @@ fi
 cd "$REPO_ROOT"
 mkdir -p "$LOG_DIR"
 : > "$LOCK_FILE"
+(( RESUME == 0 )) && rm -f "$CURSOR_FILE"
 
 # flock isn't shipped in MSYS/Git Bash — fall back to a no-op when missing.
 # Output collisions are rare because each status line is a single short
@@ -88,6 +89,7 @@ fi
 # ---------- 1. Collect node ids -------------------------------------------
 printf '[fast-test] collecting tests '
 COLLECT_ERR="$CACHE_DIR/collect.err"
+COLLECT_OUT="$CACHE_DIR/collect.out"
 # Heartbeat so the user sees activity during pytest's silent collection.
 (
     t=0
@@ -99,22 +101,29 @@ COLLECT_ERR="$CACHE_DIR/collect.err"
 ) &
 COLLECT_HB=$!
 trap 'kill $COLLECT_HB 2>/dev/null || true' EXIT
-if ! uv run pytest -o addopts= --collect-only -q "${PASSTHROUGH[@]}" \
-        2>"$COLLECT_ERR" | grep -E '::' > "$NODES_FILE.tmp"; then
-    # grep returning 1 (no matches) is the only acceptable failure path;
-    # any pytest failure leaves stderr in $COLLECT_ERR for diagnosis.
-    if [[ ! -s "$NODES_FILE.tmp" ]]; then
-        kill $COLLECT_HB 2>/dev/null || true
-        printf '\n'
-        echo "[fast-test] no tests collected" >&2
-        [[ -s "$COLLECT_ERR" ]] && { echo "--- collection stderr ---"; cat "$COLLECT_ERR"; } >&2
-        exit 1
-    fi
+if ! uv run pytest --collect-only -qq "${PASSTHROUGH[@]}" >"$COLLECT_OUT" 2>"$COLLECT_ERR"; then
+    kill $COLLECT_HB 2>/dev/null || true
+    printf '\n'
+    echo "[fast-test] test collection failed" >&2
+    [[ -s "$COLLECT_ERR" ]] && { echo "--- collection stderr ---"; cat "$COLLECT_ERR"; } >&2
+    rm -f "$COLLECT_OUT" "$NODES_FILE.tmp"
+    exit 1
+fi
+
+grep -E '::' "$COLLECT_OUT" > "$NODES_FILE.tmp" || true
+if [[ ! -s "$NODES_FILE.tmp" ]]; then
+    kill $COLLECT_HB 2>/dev/null || true
+    printf '\n'
+    echo "[fast-test] no tests collected" >&2
+    [[ -s "$COLLECT_ERR" ]] && { echo "--- collection stderr ---"; cat "$COLLECT_ERR"; } >&2
+    rm -f "$COLLECT_OUT" "$NODES_FILE.tmp"
+    exit 1
 fi
 kill $COLLECT_HB 2>/dev/null || true
 trap - EXIT
 printf ' done\n'
 mv "$NODES_FILE.tmp" "$NODES_FILE"
+rm -f "$COLLECT_OUT"
 TOTAL="$(wc -l < "$NODES_FILE" | tr -d ' ')"
 NUM_CHUNKS=$(( (TOTAL + CHUNK_SIZE - 1) / CHUNK_SIZE ))
 
@@ -174,7 +183,7 @@ run_chunk() {
     set +e
     PYTHONUNBUFFERED=1 \
         sed -n "$((start+1)),${end}p" "$NODES_FILE" \
-        | xargs -d '\n' -r uv run pytest -o addopts= \
+        | xargs -d '\n' -r uv run pytest \
             -n "$INNER_JOBS" --dist=load --tb=short -v \
             2>&1 \
         | $TEE_BIN "$log" \
@@ -224,8 +233,15 @@ WALL=$(( $(date +%s) - WALL_START ))
 
 # ---------- 5. Tally ------------------------------------------------------
 COMPLETED=0
-[[ -f "$CURSOR_FILE" ]] && COMPLETED="$(sort -u "$CURSOR_FILE" | wc -l | tr -d ' ')"
-FAILED=$(( PENDING_COUNT - (COMPLETED - SKIPPED) ))
+if [[ -f "$CURSOR_FILE" ]]; then
+    COMPLETED="$((
+        $(awk -v max="$NUM_CHUNKS" '
+            $1 ~ /^[0-9]+$/ && $1 >= 1 && $1 <= max { seen[$1] = 1 }
+            END { print length(seen) }
+        ' "$CURSOR_FILE")
+    ))"
+fi
+FAILED=$(( NUM_CHUNKS - COMPLETED ))
 
 printf '\n[fast-test] '
 if (( DISPATCH_RC == 0 && FAILED == 0 )); then
