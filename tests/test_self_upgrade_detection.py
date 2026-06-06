@@ -733,16 +733,18 @@ class TestDetectionPipx:
 
 
 class TestEditableInstallMetadata:
-    @pytest.mark.skipif(
-        not hasattr(importlib.metadata, "InvalidMetadataError"),
-        reason=(
-            "importlib.metadata.InvalidMetadataError does not exist on this "
-            "Python; _editable_direct_url_path only catches it when present, so "
-            "fabricating it would exercise a path that cannot fire in production"
-        ),
-    )
-    def test_editable_marker_false_when_metadata_is_invalid(self):
-        invalid_metadata_error = importlib.metadata.InvalidMetadataError
+    def test_editable_marker_false_when_metadata_is_invalid(self, monkeypatch):
+        invalid_metadata_error = getattr(importlib.metadata, "InvalidMetadataError", None)
+        if invalid_metadata_error is None:
+            class invalid_metadata_error(Exception):
+                pass
+
+            monkeypatch.setattr(
+                importlib.metadata,
+                "InvalidMetadataError",
+                invalid_metadata_error,
+                raising=False,
+            )
 
         with patch(
             "importlib.metadata.distribution",

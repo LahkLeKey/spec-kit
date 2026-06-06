@@ -268,15 +268,16 @@ class TestLoadAuthConfig:
         entries = load_auth_config(cfg)
         assert entries[0].hosts == ("*.visualstudio.com",)
 
-    @pytest.mark.skipif(os.name == "nt", reason="POSIX permission bits not supported on Windows")
-    def test_world_readable_warns(self, tmp_path):
+    def test_world_readable_warns(self, tmp_path, monkeypatch):
         import stat
+        import specify_cli.authentication.config as auth_config
 
         cfg = tmp_path / "auth.json"
         cfg.write_text(json.dumps({
             "providers": [{"hosts": ["github.com"], "provider": "github", "auth": "bearer", "token_env": "GH_TOKEN"}]
         }))
         cfg.chmod(stat.S_IRUSR | stat.S_IWUSR | stat.S_IRGRP | stat.S_IROTH)
+        monkeypatch.setattr(auth_config.os, "name", "posix", raising=False)
         with pytest.warns(UserWarning, match="readable by group"):
             load_auth_config(cfg)
 
