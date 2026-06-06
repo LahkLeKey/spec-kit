@@ -3,7 +3,6 @@
 from __future__ import annotations
 
 import ctypes
-import math
 import os
 import sys
 from dataclasses import dataclass
@@ -75,7 +74,7 @@ def _detect_cgroup_cpu_quota_count() -> int | None:
                 quota = int(parts[0])
                 period = int(parts[1])
                 if quota > 0 and period > 0:
-                    return max(1, math.ceil(quota / period))
+                    return max(1, quota // period)
             except ValueError:
                 pass
 
@@ -103,7 +102,7 @@ def _detect_cgroup_cpu_quota_count() -> int | None:
             period = int(period_raw)
             # cgroup v1 uses -1 for unlimited quota.
             if quota > 0 and period > 0:
-                return max(1, math.ceil(quota / period))
+                return max(1, quota // period)
         except ValueError:
             continue
 

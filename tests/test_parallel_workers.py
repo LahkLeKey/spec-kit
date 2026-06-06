@@ -183,7 +183,31 @@ def test_detect_cgroup_cpu_quota_count_v1_parses_cpuacct_cpu_mount(monkeypatch):
         return values.get(path)
 
     monkeypatch.setattr(_parallel, "_read_text", fake_read_text)
-    assert _parallel._detect_cgroup_cpu_quota_count() == 3
+    assert _parallel._detect_cgroup_cpu_quota_count() == 2
+
+
+def test_detect_cgroup_cpu_quota_count_v2_floors_fractional_quota(monkeypatch):
+    def fake_read_text(path):
+        values = {
+            "/sys/fs/cgroup/cpu.max": "110000 100000",
+        }
+        return values.get(path)
+
+    monkeypatch.setattr(_parallel, "_read_text", fake_read_text)
+    assert _parallel._detect_cgroup_cpu_quota_count() == 1
+
+
+def test_detect_cgroup_cpu_quota_count_v1_floors_fractional_quota(monkeypatch):
+    def fake_read_text(path):
+        values = {
+            "/sys/fs/cgroup/cpu.max": None,
+            "/sys/fs/cgroup/cpu/cpu.cfs_quota_us": "110000",
+            "/sys/fs/cgroup/cpu/cpu.cfs_period_us": "100000",
+        }
+        return values.get(path)
+
+    monkeypatch.setattr(_parallel, "_read_text", fake_read_text)
+    assert _parallel._detect_cgroup_cpu_quota_count() == 1
 
 
 def test_parallel_report_header_formats_zero_memory_values():

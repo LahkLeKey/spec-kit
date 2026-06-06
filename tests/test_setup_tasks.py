@@ -116,15 +116,6 @@ def _run_bash_format_command(repo: Path, command_name: str) -> subprocess.Comple
     )
 
 
-def _bash_has_python3(repo: Path) -> bool:
-    result = subprocess.run(
-        ["bash", "-c", "command -v python3 >/dev/null 2>&1"],
-        cwd=repo,
-        check=False,
-    )
-    return result.returncode == 0
-
-
 def _run_powershell_format_command(repo: Path, command_name: str) -> subprocess.CompletedProcess:
     script = repo / ".specify" / "scripts" / "powershell" / "common.ps1"
     exe = "pwsh" if HAS_PWSH else _POWERSHELL
