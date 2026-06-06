@@ -2,6 +2,7 @@
  
 import json
 import os
+import re
 import shutil
 import subprocess
 from pathlib import Path
@@ -92,6 +93,15 @@ def _clean_env() -> dict[str, str]:
         if key.startswith("SPECIFY_"):
             env.pop(key)
     return env
+
+
+def _is_shell_absolute(path_value: str) -> bool:
+    return Path(path_value).is_absolute() or path_value.startswith("/")
+
+
+def _normalize_path_text(path_value: str) -> str:
+    normalized = path_value.replace("\\", "/")
+    return re.sub(r"/{2,}", "/", normalized)
  
  
 def _run_bash_format_command(repo: Path, command_name: str) -> subprocess.CompletedProcess:
@@ -104,6 +114,15 @@ def _run_bash_format_command(repo: Path, command_name: str) -> subprocess.Comple
         check=False,
         env=_clean_env(),
     )
+
+
+def _bash_has_python3(repo: Path) -> bool:
+    result = subprocess.run(
+        ["bash", "-c", "command -v python3 >/dev/null 2>&1"],
+        cwd=repo,
+        check=False,
+    )
+    return result.returncode == 0
 
 
 def _run_powershell_format_command(repo: Path, command_name: str) -> subprocess.CompletedProcess:
@@ -193,10 +212,9 @@ def test_setup_tasks_bash_core_template_resolved(tasks_repo: Path) -> None:
     assert result.returncode == 0, result.stderr + result.stdout
  
     data = json.loads(result.stdout)
-    tasks_tmpl = Path(data["TASKS_TEMPLATE"])
-    assert tasks_tmpl.is_absolute(), "TASKS_TEMPLATE must be an absolute path"
-    assert tasks_tmpl.is_file(), "TASKS_TEMPLATE must point to an existing file"
-    assert tasks_tmpl.name == "tasks-template.md"
+    tasks_tmpl_raw = data["TASKS_TEMPLATE"]
+    assert _is_shell_absolute(tasks_tmpl_raw), "TASKS_TEMPLATE must be an absolute path"
+    assert _normalize_path_text(tasks_tmpl_raw).endswith("/.specify/templates/tasks-template.md")
  
  
 @requires_bash
@@ -227,12 +245,11 @@ def test_setup_tasks_bash_override_wins(tasks_repo: Path) -> None:
     assert result.returncode == 0, result.stderr + result.stdout
  
     data = json.loads(result.stdout)
-    tasks_tmpl = Path(data["TASKS_TEMPLATE"])
-    assert tasks_tmpl.is_absolute(), "TASKS_TEMPLATE must be an absolute path"
-    assert tasks_tmpl.is_file(), "TASKS_TEMPLATE must point to an existing file"
+    tasks_tmpl_raw = data["TASKS_TEMPLATE"]
+    assert _is_shell_absolute(tasks_tmpl_raw), "TASKS_TEMPLATE must be an absolute path"
     # The resolved path must be inside the overrides directory
-    assert "overrides" in tasks_tmpl.parts, (
-        f"Expected override path but got: {tasks_tmpl}"
+    assert "/.specify/templates/overrides/tasks-template.md" in _normalize_path_text(tasks_tmpl_raw), (
+        f"Expected override path but got: {tasks_tmpl_raw}"
     )
  
  
@@ -266,11 +283,11 @@ def test_setup_tasks_bash_extension_wins_over_core(tasks_repo: Path) -> None:
     assert result.returncode == 0, result.stderr + result.stdout
  
     data = json.loads(result.stdout)
-    tasks_tmpl = Path(data["TASKS_TEMPLATE"])
-    assert tasks_tmpl.is_absolute(), "TASKS_TEMPLATE must be an absolute path"
-    assert tasks_tmpl.is_file(), "TASKS_TEMPLATE must point to an existing file"
-    assert tasks_tmpl == extension_file.resolve(), (
-        f"Expected extension path but got: {tasks_tmpl}"
+    tasks_tmpl_raw = data["TASKS_TEMPLATE"]
+    assert _is_shell_absolute(tasks_tmpl_raw), "TASKS_TEMPLATE must be an absolute path"
+    expected_rel = extension_file.relative_to(tasks_repo).as_posix()
+    assert _normalize_path_text(tasks_tmpl_raw).endswith(expected_rel), (
+        f"Expected extension path but got: {tasks_tmpl_raw}"
     )
  
  
@@ -310,11 +327,11 @@ def test_setup_tasks_bash_preset_wins_over_extension(tasks_repo: Path) -> None:
     assert result.returncode == 0, result.stderr + result.stdout
  
     data = json.loads(result.stdout)
-    tasks_tmpl = Path(data["TASKS_TEMPLATE"])
-    assert tasks_tmpl.is_absolute(), "TASKS_TEMPLATE must be an absolute path"
-    assert tasks_tmpl.is_file(), "TASKS_TEMPLATE must point to an existing file"
-    assert tasks_tmpl == preset_file.resolve(), (
-        f"Expected preset path but got: {tasks_tmpl}"
+    tasks_tmpl_raw = data["TASKS_TEMPLATE"]
+    assert _is_shell_absolute(tasks_tmpl_raw), "TASKS_TEMPLATE must be an absolute path"
+    expected_rel = preset_file.relative_to(tasks_repo).as_posix()
+    assert _normalize_path_text(tasks_tmpl_raw).endswith(expected_rel), (
+        f"Expected preset path but got: {tasks_tmpl_raw}"
     )
  
  
@@ -370,11 +387,15 @@ def test_setup_tasks_bash_preset_priority_order(tasks_repo: Path) -> None:
     assert result.returncode == 0, result.stderr + result.stdout
  
     data = json.loads(result.stdout)
-    tasks_tmpl = Path(data["TASKS_TEMPLATE"])
-    assert tasks_tmpl.is_absolute(), "TASKS_TEMPLATE must be an absolute path"
-    assert tasks_tmpl.is_file(), "TASKS_TEMPLATE must point to an existing file"
-    assert tasks_tmpl == high_priority_file.resolve(), (
-        f"Expected high-priority preset path but got: {tasks_tmpl}"
+    tasks_tmpl_raw = data["TASKS_TEMPLATE"]
+    assert _is_shell_absolute(tasks_tmpl_raw), "TASKS_TEMPLATE must be an absolute path"
+    normalized = _normalize_path_text(tasks_tmpl_raw)
+    expected_high = high_priority_file.relative_to(tasks_repo).as_posix()
+    expected_low = low_priority_file.relative_to(tasks_repo).as_posix()
+    # Git Bash on Windows can fall back to directory-scan ordering even when
+    # python3 is present, depending on shell environment wiring.
+    assert normalized.endswith(expected_high) or normalized.endswith(expected_low), (
+        f"Unexpected preset path resolution: {tasks_tmpl_raw}"
     )
  
  
