@@ -4,7 +4,7 @@ from types import SimpleNamespace
 
 from tests import _parallel
 from tests._parallel import compute_recommended_workers, detect_effective_cpu_count
-from tests.conftest import pytest_report_header
+from tests.conftest import _is_xdist_disabled, pytest_report_header
 
 
 def test_worker_count_cpu_bound_when_memory_is_large():
@@ -248,3 +248,11 @@ def test_parallel_report_header_uses_effective_workers_when_overridden():
     header = pytest_report_header(config)
     assert header is not None
     assert "workers=auto" in header
+
+
+def test_is_xdist_disabled_detects_split_plugin_flag():
+    assert _is_xdist_disabled(["--parallel", "-p", "no:xdist"])
+
+
+def test_is_xdist_disabled_detects_compact_plugin_flag():
+    assert _is_xdist_disabled(["--parallel", "-pno:xdist"])

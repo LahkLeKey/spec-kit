@@ -45,6 +45,22 @@ def _has_dist_arg(args: list[str]) -> bool:
     return any(arg == "--dist" or arg.startswith("--dist=") for arg in args)
 
 
+def _is_xdist_disabled(args: list[str]) -> bool:
+    """Return True when users explicitly disable xdist with -p no:xdist."""
+    idx = 0
+    while idx < len(args):
+        arg = args[idx]
+        if arg == "-p":
+            if idx + 1 < len(args) and args[idx + 1].startswith("no:xdist"):
+                return True
+            idx += 2
+            continue
+        if arg.startswith("-pno:xdist"):
+            return True
+        idx += 1
+    return False
+
+
 def _extract_cli_option(args: list[str], option: str, default: str | None = None) -> str | None:
     """Extract option value from --opt value or --opt=value forms."""
     prefix = f"{option}="
@@ -66,6 +82,8 @@ def pytest_load_initial_conftests(early_config, parser, args):
     if "--parallel" not in args:
         return
     if not _has_xdist_installed():
+        return
+    if _is_xdist_disabled(args):
         return
     if _has_numprocesses_arg(args):
         return
@@ -103,6 +121,8 @@ def pytest_cmdline_main(config):
         return None
 
     original_args = list(config.invocation_params.args)
+    if _is_xdist_disabled(original_args):
+        return None
     if _has_numprocesses_arg(original_args):
         return None
 
