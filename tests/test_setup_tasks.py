@@ -213,8 +213,14 @@ def test_setup_tasks_bash_core_template_resolved(tasks_repo: Path) -> None:
  
     data = json.loads(result.stdout)
     tasks_tmpl_raw = data["TASKS_TEMPLATE"]
-    assert _is_shell_absolute(tasks_tmpl_raw), "TASKS_TEMPLATE must be an absolute path"
-    assert _normalize_path_text(tasks_tmpl_raw).endswith("/.specify/templates/tasks-template.md")
+    if os.name == "nt":
+        assert _is_shell_absolute(tasks_tmpl_raw), "TASKS_TEMPLATE must be an absolute path"
+        assert _normalize_path_text(tasks_tmpl_raw).endswith("/.specify/templates/tasks-template.md")
+    else:
+        tasks_tmpl = Path(tasks_tmpl_raw)
+        assert tasks_tmpl.is_absolute(), "TASKS_TEMPLATE must be an absolute path"
+        assert tasks_tmpl.is_file(), "TASKS_TEMPLATE must point to an existing file"
+        assert tasks_tmpl.name == "tasks-template.md"
  
  
 @requires_bash
@@ -392,11 +398,16 @@ def test_setup_tasks_bash_preset_priority_order(tasks_repo: Path) -> None:
     normalized = _normalize_path_text(tasks_tmpl_raw)
     expected_high = high_priority_file.relative_to(tasks_repo).as_posix()
     expected_low = low_priority_file.relative_to(tasks_repo).as_posix()
-    # Git Bash on Windows can fall back to directory-scan ordering even when
-    # python3 is present, depending on shell environment wiring.
-    assert normalized.endswith(expected_high) or normalized.endswith(expected_low), (
-        f"Unexpected preset path resolution: {tasks_tmpl_raw}"
-    )
+    if os.name == "nt":
+        # Git Bash on Windows can fall back to directory-scan ordering even when
+        # python3 is present, depending on shell environment wiring.
+        assert normalized.endswith(expected_high) or normalized.endswith(expected_low), (
+            f"Unexpected preset path resolution: {tasks_tmpl_raw}"
+        )
+    else:
+        assert normalized.endswith(expected_high), (
+            f"Expected high-priority preset path but got: {tasks_tmpl_raw}"
+        )
  
  
 @requires_bash

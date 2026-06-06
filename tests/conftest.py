@@ -5,6 +5,7 @@ import re
 import shutil
 import subprocess
 import sys
+import importlib.util
 
 import pytest
 
@@ -16,6 +17,11 @@ from tests._parallel import (
 )
 
 _ANSI_ESCAPE_RE = re.compile(r"\x1b\[[0-?]*[ -/]*[@-~]")
+
+
+def _has_xdist_installed() -> bool:
+    """Return whether pytest-xdist is importable in this environment."""
+    return importlib.util.find_spec("xdist") is not None
 
 
 def _has_numprocesses_arg(args: list[str]) -> bool:
@@ -59,6 +65,8 @@ def pytest_load_initial_conftests(early_config, parser, args):
     """Inject xdist flags early so --parallel actually runs with workers."""
     if "--parallel" not in args:
         return
+    if not _has_xdist_installed():
+        return
     if _has_numprocesses_arg(args):
         return
 
@@ -88,6 +96,8 @@ def pytest_load_initial_conftests(early_config, parser, args):
 def pytest_cmdline_main(config):
     """Reinvoke pytest with explicit xdist args when --parallel is requested."""
     if not config.getoption("--parallel"):
+        return None
+    if not _has_xdist_installed():
         return None
     if os.environ.get("SPEC_KIT_PARALLEL_REINVOKED") == "1":
         return None

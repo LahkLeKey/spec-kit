@@ -16,6 +16,8 @@ from __future__ import annotations
 import base64
 import json
 import os
+from types import SimpleNamespace
+from unittest.mock import patch
 
 import pytest
 
@@ -276,10 +278,11 @@ class TestLoadAuthConfig:
         cfg.write_text(json.dumps({
             "providers": [{"hosts": ["github.com"], "provider": "github", "auth": "bearer", "token_env": "GH_TOKEN"}]
         }))
-        cfg.chmod(stat.S_IRUSR | stat.S_IWUSR | stat.S_IRGRP | stat.S_IROTH)
         monkeypatch.setattr(auth_config.os, "name", "posix", raising=False)
-        with pytest.warns(UserWarning, match="readable by group"):
-            load_auth_config(cfg)
+        fake_mode = stat.S_IFREG | stat.S_IRUSR | stat.S_IWUSR | stat.S_IRGRP | stat.S_IROTH
+        with patch("specify_cli.authentication.config.Path.stat", return_value=SimpleNamespace(st_mode=fake_mode)):
+            with pytest.warns(UserWarning, match="readable by group"):
+                load_auth_config(cfg)
 
 
 # ---------------------------------------------------------------------------

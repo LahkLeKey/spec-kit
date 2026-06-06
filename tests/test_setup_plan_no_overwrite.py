@@ -53,15 +53,15 @@ def _clean_env() -> dict[str, str]:
 
 def _path_from_bash_output(path_value: str) -> Path:
     """Normalize bash-emitted paths for assertions on Windows/Git Bash."""
-    p = Path(path_value)
-    if p.is_absolute():
-        return p
     if os.name == "nt":
         if path_value.startswith("/tmp/"):
             return Path(tempfile.gettempdir()) / path_value[len("/tmp/"):]
         m = re.match(r"^/([a-zA-Z])/(.*)$", path_value)
         if m:
             return Path(f"{m.group(1).upper()}:/{m.group(2)}")
+    p = Path(path_value)
+    if p.is_absolute():
+        return p
     return p
 
 
