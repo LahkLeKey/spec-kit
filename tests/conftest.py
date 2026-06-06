@@ -18,6 +18,105 @@ from tests._parallel import (
 _ANSI_ESCAPE_RE = re.compile(r"\x1b\[[0-?]*[ -/]*[@-~]")
 
 
+def _has_numprocesses_arg(args: list[str]) -> bool:
+    """Return True when users explicitly pass -n/--numprocesses."""
+    idx = 0
+    while idx < len(args):
+        arg = args[idx]
+        if arg in ("-n", "--numprocesses"):
+            return True
+        if arg.startswith("--numprocesses="):
+            return True
+        # Support compact forms like -n2 or -nauto
+        if arg.startswith("-n") and arg != "-n":
+            return True
+        idx += 1
+    return False
+
+
+def _has_dist_arg(args: list[str]) -> bool:
+    """Return True when users explicitly pass --dist."""
+    return any(arg == "--dist" or arg.startswith("--dist=") for arg in args)
+
+
+def _extract_cli_option(args: list[str], option: str, default: str | None = None) -> str | None:
+    """Extract option value from --opt value or --opt=value forms."""
+    prefix = f"{option}="
+    idx = 0
+    while idx < len(args):
+        arg = args[idx]
+        if arg == option:
+            if idx + 1 < len(args):
+                return args[idx + 1]
+            return default
+        if arg.startswith(prefix):
+            return arg[len(prefix):]
+        idx += 1
+    return default
+
+
+def pytest_load_initial_conftests(early_config, parser, args):
+    """Inject xdist flags early so --parallel actually runs with workers."""
+    if "--parallel" not in args:
+        return
+    if _has_numprocesses_arg(args):
+        return
+
+    tier = _extract_cli_option(args, "--parallel-tier", "medium")
+    max_workers_raw = _extract_cli_option(args, "--parallel-max-workers", None)
+    max_workers = None
+    if max_workers_raw not in (None, ""):
+        try:
+            max_workers = int(max_workers_raw)
+        except ValueError:
+            max_workers = None
+
+    settings = compute_recommended_workers(
+        cpu_count=detect_effective_cpu_count(),
+        total_memory_bytes=detect_total_memory_bytes(),
+        available_memory_bytes=detect_available_memory_bytes(),
+        platform_name=sys.platform,
+        max_workers=max_workers,
+        tier=tier if tier in ("low", "medium", "high") else "medium",
+    )
+
+    args.extend(["-n", str(settings.workers)])
+    if not _has_dist_arg(args):
+        args.extend(["--dist", "worksteal"])
+
+
+def pytest_cmdline_main(config):
+    """Reinvoke pytest with explicit xdist args when --parallel is requested."""
+    if not config.getoption("--parallel"):
+        return None
+    if os.environ.get("SPEC_KIT_PARALLEL_REINVOKED") == "1":
+        return None
+
+    original_args = list(config.invocation_params.args)
+    if _has_numprocesses_arg(original_args):
+        return None
+
+    max_workers = config.getoption("--parallel-max-workers")
+    tier = config.getoption("--parallel-tier")
+    settings = compute_recommended_workers(
+        cpu_count=detect_effective_cpu_count(),
+        total_memory_bytes=detect_total_memory_bytes(),
+        available_memory_bytes=detect_available_memory_bytes(),
+        platform_name=sys.platform,
+        max_workers=max_workers,
+        tier=tier,
+    )
+
+    reinvoke_args = [*original_args, "-n", str(settings.workers)]
+    if not _has_dist_arg(original_args):
+        reinvoke_args.extend(["--dist", "worksteal"])
+
+    env = os.environ.copy()
+    env["SPEC_KIT_PARALLEL_REINVOKED"] = "1"
+    result = subprocess.run([sys.executable, "-m", "pytest", *reinvoke_args], env=env)
+    return result.returncode
+
+
 def _has_working_bash() -> bool:
     """Check whether a functional native bash is available.
 
@@ -124,7 +223,7 @@ def pytest_configure(config):
         tier=tier,
     )
 
-    # Respect explicit -n values other than None/auto/0 if users set one.
+    # Respect explicit -n values from CLI; otherwise keep the early-injected value.
     requested_numprocesses = getattr(config.option, "numprocesses", None)
     if requested_numprocesses in (None, 0, "auto"):
         config.option.numprocesses = settings.workers
