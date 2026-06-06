@@ -65,6 +65,49 @@ def _detect_cgroup_available_memory_bytes() -> int | None:
     return None
 
 
+def _detect_cgroup_cpu_quota_count() -> int | None:
+    # cgroup v2
+    quota_raw = _read_text("/sys/fs/cgroup/cpu.max")
+    if quota_raw:
+        parts = quota_raw.split()
+        if len(parts) == 2 and parts[0] != "max":
+            try:
+                quota = int(parts[0])
+                period = int(parts[1])
+                if quota > 0 and period > 0:
+                    return max(1, math.ceil(quota / period))
+            except ValueError:
+                pass
+
+    # cgroup v1
+    # Some distros/runtimes mount under /sys/fs/cgroup/cpu/, while others use
+    # /sys/fs/cgroup/cpu,cpuacct/.
+    quota_candidates = (
+        "/sys/fs/cgroup/cpu/cpu.cfs_quota_us",
+        "/sys/fs/cgroup/cpu,cpuacct/cpu.cfs_quota_us",
+    )
+    period_candidates = (
+        "/sys/fs/cgroup/cpu/cpu.cfs_period_us",
+        "/sys/fs/cgroup/cpu,cpuacct/cpu.cfs_period_us",
+    )
+
+    for quota_path, period_path in zip(quota_candidates, period_candidates):
+        quota_raw = _read_text(quota_path)
+        period_raw = _read_text(period_path)
+        if not quota_raw or not period_raw:
+            continue
+        try:
+            quota = int(quota_raw)
+            period = int(period_raw)
+            # cgroup v1 uses -1 for unlimited quota.
+            if quota > 0 and period > 0:
+                return max(1, math.ceil(quota / period))
+        except ValueError:
+            continue
+
+    return None
+
+
 def detect_effective_cpu_count() -> int:
     """Best-effort effective CPU count considering affinity and container quotas."""
     cpus = max(1, int(os.cpu_count() or 1))
@@ -75,17 +118,9 @@ def detect_effective_cpu_count() -> int:
         except OSError:
             pass
 
-    quota_raw = _read_text("/sys/fs/cgroup/cpu.max")
-    if quota_raw:
-        parts = quota_raw.split()
-        if len(parts) == 2 and parts[0] != "max":
-            try:
-                quota = int(parts[0])
-                period = int(parts[1])
-                if quota > 0 and period > 0:
-                    cpus = min(cpus, max(1, math.ceil(quota / period)))
-            except ValueError:
-                pass
+    cgroup_cpus = _detect_cgroup_cpu_quota_count()
+    if cgroup_cpus is not None:
+        cpus = min(cpus, cgroup_cpus)
 
     return max(1, cpus)
 
