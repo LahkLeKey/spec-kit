@@ -59,10 +59,7 @@ def _path_from_bash_output(path_value: str) -> Path:
         m = re.match(r"^/([a-zA-Z])/(.*)$", path_value)
         if m:
             return Path(f"{m.group(1).upper()}:/{m.group(2)}")
-    p = Path(path_value)
-    if p.is_absolute():
-        return p
-    return p
+    return Path(path_value)
 
 
 def _git_init(repo: Path) -> None:
