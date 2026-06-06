@@ -76,13 +76,12 @@ class TestInstallerMissing:
         assert result.exit_code == 0
 
     def test_relative_installer_path_does_not_require_path_lookup(
-        self, uv_tool_argv0, clean_environ, tmp_path
+        self, uv_tool_argv0, clean_environ, tmp_path, monkeypatch
     ):
         fake_uv = tmp_path / "uv-installer"
         fake_uv.write_text("#!/bin/sh\n")
         fake_uv.chmod(0o755)
-        old_cwd = os.getcwd()
-        os.chdir(tmp_path)
+        monkeypatch.chdir(tmp_path)
         with patch("specify_cli.authentication.http.urllib.request.urlopen") as mock_urlopen, patch(
             "specify_cli._version.shutil.which", side_effect=lambda name: None
         ), patch(
@@ -105,19 +104,15 @@ class TestInstallerMissing:
         ):
             mock_urlopen.return_value = mock_urlopen_response({"tag_name": "v0.7.6"})
             mock_run.side_effect = [_completed_process(0)]
-            try:
-                result = runner.invoke(app, ["self", "upgrade"])
-            finally:
-                os.chdir(old_cwd)
+            result = runner.invoke(app, ["self", "upgrade"])
 
         assert result.exit_code == 0
         assert mock_run.call_args.args[0][0] == "./uv-installer"
 
     def test_relative_installer_path_missing_gets_path_specific_message(
-        self, uv_tool_argv0, clean_environ, tmp_path
+        self, uv_tool_argv0, clean_environ, tmp_path, monkeypatch
     ):
-        old_cwd = os.getcwd()
-        os.chdir(tmp_path)
+        monkeypatch.chdir(tmp_path)
         with patch("specify_cli.authentication.http.urllib.request.urlopen") as mock_urlopen, patch(
             "specify_cli._version.shutil.which", side_effect=lambda name: None
         ), patch("specify_cli._version._get_installed_version", return_value="0.7.5"), patch(
@@ -133,10 +128,7 @@ class TestInstallerMissing:
             ],
         ):
             mock_urlopen.return_value = mock_urlopen_response({"tag_name": "v0.7.6"})
-            try:
-                result = runner.invoke(app, ["self", "upgrade"])
-            finally:
-                os.chdir(old_cwd)
+            result = runner.invoke(app, ["self", "upgrade"])
 
         assert result.exit_code == 3
         assert (
@@ -204,13 +196,12 @@ class TestInstallerMissing:
         )
 
     def test_relative_installer_path_not_executable_gets_path_specific_message(
-        self, uv_tool_argv0, clean_environ, tmp_path
+        self, uv_tool_argv0, clean_environ, tmp_path, monkeypatch
     ):
         fake_uv = tmp_path / "uv-installer"
         fake_uv.write_text("#!/bin/sh\n")
         fake_uv.chmod(0o644)
-        old_cwd = os.getcwd()
-        os.chdir(tmp_path)
+        monkeypatch.chdir(tmp_path)
         with patch("specify_cli.authentication.http.urllib.request.urlopen") as mock_urlopen, patch(
             "specify_cli._version.shutil.which", side_effect=lambda name: None
         ), patch("specify_cli._version.os.access", return_value=False), patch(
@@ -228,10 +219,7 @@ class TestInstallerMissing:
             ],
         ):
             mock_urlopen.return_value = mock_urlopen_response({"tag_name": "v0.7.6"})
-            try:
-                result = runner.invoke(app, ["self", "upgrade"])
-            finally:
-                os.chdir(old_cwd)
+            result = runner.invoke(app, ["self", "upgrade"])
 
         out = strip_ansi(result.output)
         assert result.exit_code == 3

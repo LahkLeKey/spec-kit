@@ -199,7 +199,7 @@ def _assert_shell_path_matches(actual: str, expected: Path) -> None:
                 return parts[idx:]
         return parts
 
-    if trim_to_pytest(actual_parts) == trim_to_pytest(expected_parts):
+    if os.name == "nt" and trim_to_pytest(actual_parts) == trim_to_pytest(expected_parts):
         return
 
     # Keep tail-component fallback for Windows shell path translation quirks.

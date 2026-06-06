@@ -19,6 +19,13 @@ from tests._parallel import (
 _ANSI_ESCAPE_RE = re.compile(r"\x1b\[[0-?]*[ -/]*[@-~]")
 
 
+def _args_before_double_dash(args: list[str]) -> list[str]:
+    """Return only option-parsed args before '--' positional sentinel."""
+    if "--" in args:
+        return args[:args.index("--")]
+    return args
+
+
 def _has_xdist_installed() -> bool:
     """Return whether pytest-xdist is importable in this environment."""
     return importlib.util.find_spec("xdist") is not None
@@ -26,6 +33,7 @@ def _has_xdist_installed() -> bool:
 
 def _has_numprocesses_arg(args: list[str]) -> bool:
     """Return True when users explicitly pass -n/--numprocesses."""
+    args = _args_before_double_dash(args)
     idx = 0
     while idx < len(args):
         arg = args[idx]
@@ -42,11 +50,13 @@ def _has_numprocesses_arg(args: list[str]) -> bool:
 
 def _has_dist_arg(args: list[str]) -> bool:
     """Return True when users explicitly pass --dist."""
+    args = _args_before_double_dash(args)
     return any(arg == "--dist" or arg.startswith("--dist=") for arg in args)
 
 
 def _is_xdist_disabled(args: list[str]) -> bool:
     """Return True when users explicitly disable xdist with -p no:xdist."""
+    args = _args_before_double_dash(args)
     idx = 0
     while idx < len(args):
         arg = args[idx]
@@ -63,6 +73,7 @@ def _is_xdist_disabled(args: list[str]) -> bool:
 
 def _extract_cli_option(args: list[str], option: str, default: str | None = None) -> str | None:
     """Extract option value from --opt value or --opt=value forms."""
+    args = _args_before_double_dash(args)
     prefix = f"{option}="
     idx = 0
     while idx < len(args):
@@ -106,9 +117,14 @@ def pytest_load_initial_conftests(early_config, parser, args):
         tier=tier if tier in ("low", "medium", "high") else "medium",
     )
 
-    args.extend(["-n", str(settings.workers)])
+    injected_args = ["-n", str(settings.workers)]
     if not _has_dist_arg(args):
-        args.extend(["--dist", "worksteal"])
+        injected_args.extend(["--dist", "worksteal"])
+    if "--" in args:
+        idx = args.index("--")
+        args[idx:idx] = injected_args
+    else:
+        args.extend(injected_args)
 
 
 def pytest_cmdline_main(config):
@@ -137,9 +153,16 @@ def pytest_cmdline_main(config):
         tier=tier,
     )
 
-    reinvoke_args = [*original_args, "-n", str(settings.workers)]
+    injected_args = ["-n", str(settings.workers)]
     if not _has_dist_arg(original_args):
-        reinvoke_args.extend(["--dist", "worksteal"])
+        injected_args.extend(["--dist", "worksteal"])
+
+    reinvoke_args = list(original_args)
+    if "--" in reinvoke_args:
+        idx = reinvoke_args.index("--")
+        reinvoke_args[idx:idx] = injected_args
+    else:
+        reinvoke_args.extend(injected_args)
 
     env = os.environ.copy()
     env["SPEC_KIT_PARALLEL_REINVOKED"] = "1"

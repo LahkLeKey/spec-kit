@@ -4,7 +4,7 @@ from types import SimpleNamespace
 
 from tests import _parallel
 from tests._parallel import compute_recommended_workers, detect_effective_cpu_count
-from tests.conftest import _is_xdist_disabled, pytest_report_header
+from tests.conftest import _extract_cli_option, _has_dist_arg, _has_numprocesses_arg, _is_xdist_disabled, pytest_report_header
 
 
 def test_worker_count_cpu_bound_when_memory_is_large():
@@ -256,3 +256,14 @@ def test_is_xdist_disabled_detects_split_plugin_flag():
 
 def test_is_xdist_disabled_detects_compact_plugin_flag():
     assert _is_xdist_disabled(["--parallel", "-pno:xdist"])
+
+
+def test_numprocesses_and_dist_detection_ignore_args_after_double_dash():
+    args = ["--parallel", "--", "-n", "4", "--dist", "load"]
+    assert not _has_numprocesses_arg(args)
+    assert not _has_dist_arg(args)
+
+
+def test_extract_cli_option_ignores_args_after_double_dash():
+    args = ["--parallel", "--", "--parallel-tier", "high"]
+    assert _extract_cli_option(args, "--parallel-tier", "medium") == "medium"
