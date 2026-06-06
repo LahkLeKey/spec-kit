@@ -736,8 +736,10 @@ class TestEditableInstallMetadata:
     def test_editable_marker_false_when_metadata_is_invalid(self, monkeypatch):
         invalid_metadata_error = getattr(importlib.metadata, "InvalidMetadataError", None)
         if invalid_metadata_error is None:
-            class invalid_metadata_error(Exception):
+            class _FakeInvalidMetadataError(Exception):
                 pass
+
+            invalid_metadata_error = _FakeInvalidMetadataError
 
             monkeypatch.setattr(
                 importlib.metadata,

@@ -235,7 +235,7 @@ def pytest_configure(config):
 
     # Respect explicit -n values from CLI; otherwise keep the early-injected value.
     requested_numprocesses = getattr(config.option, "numprocesses", None)
-    if requested_numprocesses in (None, 0, "auto"):
+    if requested_numprocesses in (None, 0):
         config.option.numprocesses = settings.workers
     if hasattr(config.option, "dist") and not config.option.dist:
         config.option.dist = "worksteal"
