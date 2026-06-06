@@ -251,10 +251,15 @@ def compute_recommended_workers(
 
     # Bound workers by currently available memory to avoid swap thrash.
     memory_cap = cpu_cap
-    memory_basis = available_memory_bytes if (available_memory_bytes and available_memory_bytes > 0) else total_memory_bytes
-    if memory_basis and memory_basis > 0:
+    if available_memory_bytes is not None:
+        memory_basis = available_memory_bytes
+    else:
+        memory_basis = total_memory_bytes
+    if memory_basis is not None and memory_basis > 0:
         gib = memory_basis / (1024 ** 3)
         memory_cap = max(1, int(gib // cfg.memory_per_worker_gib))
+    elif memory_basis is not None:
+        memory_cap = 1
 
     os_cap = cfg.os_cap_by_platform.get(platform_name, cfg.os_cap_by_platform["win32"])
 

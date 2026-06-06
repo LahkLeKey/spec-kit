@@ -241,12 +241,12 @@ def pytest_report_header(config):
 
     total_gib = (
         f"{settings.total_memory_bytes / (1024 ** 3):.1f}GiB"
-        if settings.total_memory_bytes
+        if settings.total_memory_bytes is not None
         else "unknown"
     )
     avail_gib = (
         f"{settings.available_memory_bytes / (1024 ** 3):.1f}GiB"
-        if settings.available_memory_bytes
+        if settings.available_memory_bytes is not None
         else "unknown"
     )
     return (

@@ -1,7 +1,10 @@
 """Tests for system-aware parallel worker sizing."""
 
+from types import SimpleNamespace
+
 from tests import _parallel
 from tests._parallel import compute_recommended_workers, detect_effective_cpu_count
+from tests.conftest import pytest_report_header
 
 
 def test_worker_count_cpu_bound_when_memory_is_large():
@@ -76,6 +79,18 @@ def test_worker_count_uses_total_memory_when_available_unknown():
         tier="medium",
     )
     assert settings.workers == 2
+
+
+def test_worker_count_treats_zero_available_memory_as_known_boundary():
+    settings = compute_recommended_workers(
+        cpu_count=8,
+        total_memory_bytes=64 * 1024 ** 3,
+        available_memory_bytes=0,
+        platform_name="linux",
+        max_workers=None,
+        tier="medium",
+    )
+    assert settings.workers == 1
 
 
 def test_low_tier_is_more_conservative_than_high_tier():
@@ -169,3 +184,22 @@ def test_detect_cgroup_cpu_quota_count_v1_parses_cpuacct_cpu_mount(monkeypatch):
 
     monkeypatch.setattr(_parallel, "_read_text", fake_read_text)
     assert _parallel._detect_cgroup_cpu_quota_count() == 3
+
+
+def test_parallel_report_header_formats_zero_memory_values():
+    settings = _parallel.ParallelSettings(
+        tier="medium",
+        workers=1,
+        cpu_cap=1,
+        memory_cap=1,
+        os_cap=4,
+        effective_cpus=1,
+        total_memory_bytes=0,
+        available_memory_bytes=0,
+        memory_per_worker_gib=1.5,
+    )
+    config = SimpleNamespace(_spec_kit_parallel_settings=settings)
+    header = pytest_report_header(config)
+    assert header is not None
+    assert "avail_mem=0.0GiB" in header
+    assert "total_mem=0.0GiB" in header
