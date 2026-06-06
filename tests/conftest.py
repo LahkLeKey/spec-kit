@@ -8,6 +8,13 @@ import sys
 
 import pytest
 
+from tests._parallel import (
+    compute_recommended_workers,
+    detect_available_memory_bytes,
+    detect_effective_cpu_count,
+    detect_total_memory_bytes,
+)
+
 _ANSI_ESCAPE_RE = re.compile(r"\x1b\[[0-?]*[ -/]*[@-~]")
 
 
@@ -66,6 +73,92 @@ requires_bash = pytest.mark.skipif(
 def strip_ansi(text: str) -> str:
     """Remove ANSI escape codes from Rich-formatted CLI output."""
     return _ANSI_ESCAPE_RE.sub("", text)
+
+
+def pytest_addoption(parser):
+    """Add Spec Kit parallel-test controls on top of pytest-xdist."""
+    group = parser.getgroup("spec-kit")
+    group.addoption(
+        "--parallel",
+        action="store_true",
+        default=False,
+        help="Run tests in parallel using a system-aware worker limit.",
+    )
+    group.addoption(
+        "--parallel-max-workers",
+        action="store",
+        type=int,
+        default=None,
+        help="Upper bound for --parallel worker count.",
+    )
+    group.addoption(
+        "--parallel-tier",
+        action="store",
+        choices=("low", "medium", "high"),
+        default="medium",
+        help="Parallel aggressiveness tier: low, medium, or high (default: medium).",
+    )
+
+
+def pytest_configure(config):
+    """Enable bounded xdist parallelism only when --parallel is requested."""
+    if not config.getoption("--parallel"):
+        return
+
+    max_workers = config.getoption("--parallel-max-workers")
+    tier = config.getoption("--parallel-tier")
+    if max_workers is not None and max_workers < 1:
+        raise pytest.UsageError("--parallel-max-workers must be >= 1")
+
+    if not hasattr(config.option, "numprocesses"):
+        raise pytest.UsageError(
+            "--parallel requires pytest-xdist. Install test extras with `uv sync --extra test`."
+        )
+
+    settings = compute_recommended_workers(
+        cpu_count=detect_effective_cpu_count(),
+        total_memory_bytes=detect_total_memory_bytes(),
+        available_memory_bytes=detect_available_memory_bytes(),
+        platform_name=sys.platform,
+        max_workers=max_workers,
+        tier=tier,
+    )
+
+    # Respect explicit -n values other than None/auto/0 if users set one.
+    requested_numprocesses = getattr(config.option, "numprocesses", None)
+    if requested_numprocesses in (None, 0, "auto"):
+        config.option.numprocesses = settings.workers
+    if hasattr(config.option, "dist") and not config.option.dist:
+        config.option.dist = "worksteal"
+
+    setattr(config, "_spec_kit_parallel_settings", settings)
+
+
+def pytest_report_header(config):
+    """Display resolved system-aware parallel settings in pytest header."""
+    settings = getattr(config, "_spec_kit_parallel_settings", None)
+    if settings is None:
+        return None
+
+    total_gib = (
+        f"{settings.total_memory_bytes / (1024 ** 3):.1f}GiB"
+        if settings.total_memory_bytes
+        else "unknown"
+    )
+    avail_gib = (
+        f"{settings.available_memory_bytes / (1024 ** 3):.1f}GiB"
+        if settings.available_memory_bytes
+        else "unknown"
+    )
+    return (
+        "[spec-kit] --parallel settings: "
+        f"tier={settings.tier}, "
+        f"workers={settings.workers} "
+        f"(cpu_cap={settings.cpu_cap}, mem_cap={settings.memory_cap}, os_cap={settings.os_cap}), "
+        f"effective_cpus={settings.effective_cpus}, "
+        f"avail_mem={avail_gib}, total_mem={total_gib}, "
+        f"mem_per_worker={settings.memory_per_worker_gib:.1f}GiB"
+    )
 
 
 # ---------------------------------------------------------------------------
