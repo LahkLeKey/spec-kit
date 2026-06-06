@@ -152,3 +152,20 @@ def test_detect_cgroup_cpu_quota_count_v1_parses_cfs_files(monkeypatch):
 
     monkeypatch.setattr(_parallel, "_read_text", fake_read_text)
     assert _parallel._detect_cgroup_cpu_quota_count() == 3
+
+
+def test_detect_cgroup_cpu_quota_count_v1_parses_cpuacct_cpu_mount(monkeypatch):
+    def fake_read_text(path):
+        values = {
+            "/sys/fs/cgroup/cpu.max": None,
+            "/sys/fs/cgroup/cpu/cpu.cfs_quota_us": None,
+            "/sys/fs/cgroup/cpu/cpu.cfs_period_us": None,
+            "/sys/fs/cgroup/cpu,cpuacct/cpu.cfs_quota_us": None,
+            "/sys/fs/cgroup/cpu,cpuacct/cpu.cfs_period_us": None,
+            "/sys/fs/cgroup/cpuacct,cpu/cpu.cfs_quota_us": "250000",
+            "/sys/fs/cgroup/cpuacct,cpu/cpu.cfs_period_us": "100000",
+        }
+        return values.get(path)
+
+    monkeypatch.setattr(_parallel, "_read_text", fake_read_text)
+    assert _parallel._detect_cgroup_cpu_quota_count() == 3

@@ -85,10 +85,12 @@ def _detect_cgroup_cpu_quota_count() -> int | None:
     quota_candidates = (
         "/sys/fs/cgroup/cpu/cpu.cfs_quota_us",
         "/sys/fs/cgroup/cpu,cpuacct/cpu.cfs_quota_us",
+        "/sys/fs/cgroup/cpuacct,cpu/cpu.cfs_quota_us",
     )
     period_candidates = (
         "/sys/fs/cgroup/cpu/cpu.cfs_period_us",
         "/sys/fs/cgroup/cpu,cpuacct/cpu.cfs_period_us",
+        "/sys/fs/cgroup/cpuacct,cpu/cpu.cfs_period_us",
     )
 
     for quota_path, period_path in zip(quota_candidates, period_candidates):
