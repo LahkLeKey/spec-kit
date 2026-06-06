@@ -246,7 +246,7 @@ def test_setup_tasks_bash_override_wins(tasks_repo: Path) -> None:
     assert _is_shell_absolute(tasks_tmpl_raw), "TASKS_TEMPLATE must be an absolute path"
     # The resolved path must be inside the overrides directory
     if os.name == "nt":
-        assert "/.specify/templates/overrides/tasks-template.md" in _normalize_path_text(tasks_tmpl_raw), (
+        assert _normalize_path_text(tasks_tmpl_raw).endswith("/.specify/templates/overrides/tasks-template.md"), (
             f"Expected override path but got: {tasks_tmpl_raw}"
         )
     else:

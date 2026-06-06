@@ -202,9 +202,11 @@ def _assert_shell_path_matches(actual: str, expected: Path) -> None:
     if trim_to_pytest(actual_parts) == trim_to_pytest(expected_parts):
         return
 
-    tail = min(4, len(expected_parts), len(actual_parts))
-    if tail > 0 and actual_parts[-tail:] == expected_parts[-tail:]:
-        return
+    # Keep tail-component fallback for Windows shell path translation quirks.
+    if os.name == "nt":
+        tail = min(4, len(expected_parts), len(actual_parts))
+        if tail > 0 and actual_parts[-tail:] == expected_parts[-tail:]:
+            return
 
     raise AssertionError(f"Path mismatch. actual={actual_raw!r} expected={expected_raw!r}")
 

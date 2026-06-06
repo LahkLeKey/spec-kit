@@ -227,3 +227,24 @@ def test_parallel_report_header_formats_zero_memory_values():
     assert header is not None
     assert "avail_mem=0.0GiB" in header
     assert "total_mem=0.0GiB" in header
+
+
+def test_parallel_report_header_uses_effective_workers_when_overridden():
+    settings = _parallel.ParallelSettings(
+        tier="medium",
+        workers=6,
+        cpu_cap=6,
+        memory_cap=8,
+        os_cap=8,
+        effective_cpus=8,
+        total_memory_bytes=16 * 1024 ** 3,
+        available_memory_bytes=8 * 1024 ** 3,
+        memory_per_worker_gib=1.5,
+    )
+    config = SimpleNamespace(
+        _spec_kit_parallel_settings=settings,
+        _spec_kit_parallel_effective_workers="auto",
+    )
+    header = pytest_report_header(config)
+    assert header is not None
+    assert "workers=auto" in header

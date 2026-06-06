@@ -241,6 +241,7 @@ def pytest_configure(config):
         config.option.dist = "worksteal"
 
     setattr(config, "_spec_kit_parallel_settings", settings)
+    setattr(config, "_spec_kit_parallel_effective_workers", getattr(config.option, "numprocesses", settings.workers))
 
 
 def pytest_report_header(config):
@@ -248,6 +249,8 @@ def pytest_report_header(config):
     settings = getattr(config, "_spec_kit_parallel_settings", None)
     if settings is None:
         return None
+
+    effective_workers = getattr(config, "_spec_kit_parallel_effective_workers", settings.workers)
 
     total_gib = (
         f"{settings.total_memory_bytes / (1024 ** 3):.1f}GiB"
@@ -262,7 +265,7 @@ def pytest_report_header(config):
     return (
         "[spec-kit] --parallel settings: "
         f"tier={settings.tier}, "
-        f"workers={settings.workers} "
+        f"workers={effective_workers} "
         f"(cpu_cap={settings.cpu_cap}, mem_cap={settings.memory_cap}, os_cap={settings.os_cap}), "
         f"effective_cpus={settings.effective_cpus}, "
         f"avail_mem={avail_gib}, total_mem={total_gib}, "
