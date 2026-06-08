@@ -14,6 +14,7 @@ from pathlib import Path
 import pytest
 
 from tests.conftest import requires_bash
+from tests._path_utils import assert_shell_path_matches
 
 PROJECT_ROOT = Path(__file__).resolve().parent.parent
 CREATE_FEATURE = PROJECT_ROOT / "scripts" / "bash" / "create-new-feature.sh"
@@ -214,7 +215,11 @@ class TestTimestampBranch:
         """Test 5: Long branch name is truncated to <= 244 chars."""
         long_name = "a-" * 150 + "end"
         result = run_script(git_repo, "--timestamp", "--short-name", long_name, "Long feature")
-        assert result.returncode == 0, result.stderr
+        if result.returncode != 0:
+            # On Windows, deep temp paths can still exceed fs limits even after truncation.
+            assert os.name == "nt"
+            assert re.search(r"too\s+long", result.stderr, flags=re.IGNORECASE)
+            pytest.xfail("Windows path-length limitation exceeded during long-name truncation test")
         branch = None
         for line in result.stdout.splitlines():
             if line.startswith("BRANCH_NAME:"):
@@ -409,7 +414,7 @@ class TestGetFeaturePathsSinglePrefix:
             text=True,
         )
         assert result.returncode == 0, result.stderr
-        assert result.stdout.strip() == str(tmp_path / "specs" / "001-target-spec")
+        assert_shell_path_matches(result.stdout.strip(), tmp_path / "specs" / "001-target-spec")
 
 
     @pytest.mark.skipif(not _has_pwsh(), reason="pwsh not installed")
@@ -1163,11 +1168,10 @@ class TestFeatureDirectoryResolution:
             env={**os.environ, "SPECIFY_FEATURE_DIRECTORY": str(custom_dir)},
         )
         assert result.returncode == 0, result.stderr
-        assert str(custom_dir) in result.stdout
         for line in result.stdout.splitlines():
             if line.startswith("FEATURE_DIR="):
                 val = line.split("=", 1)[1].strip("'\"")
-                assert val == str(custom_dir)
+                assert_shell_path_matches(val, custom_dir)
                 break
         else:
             pytest.fail("FEATURE_DIR not found in output")
@@ -1194,7 +1198,7 @@ class TestFeatureDirectoryResolution:
         for line in result.stdout.splitlines():
             if line.startswith("FEATURE_DIR="):
                 val = line.split("=", 1)[1].strip("'\"")
-                assert val == str(custom_dir)
+                assert_shell_path_matches(val, custom_dir)
                 break
         else:
             pytest.fail("FEATURE_DIR not found in output")
@@ -1224,7 +1228,7 @@ class TestFeatureDirectoryResolution:
         for line in result.stdout.splitlines():
             if line.startswith("FEATURE_DIR="):
                 val = line.split("=", 1)[1].strip("'\"")
-                assert val == str(env_dir)
+                assert_shell_path_matches(val, env_dir)
                 break
         else:
             pytest.fail("FEATURE_DIR not found in output")
@@ -1246,7 +1250,7 @@ class TestFeatureDirectoryResolution:
         for line in result.stdout.splitlines():
             if line.startswith("FEATURE_DIR="):
                 val = line.split("=", 1)[1].strip("'\"")
-                assert val == str(spec_dir)
+                assert_shell_path_matches(val, spec_dir)
                 break
         else:
             pytest.fail("FEATURE_DIR not found in output")

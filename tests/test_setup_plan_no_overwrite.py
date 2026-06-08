@@ -9,6 +9,7 @@ from pathlib import Path
 import pytest
 
 from tests.conftest import requires_bash
+from tests._path_utils import path_from_bash_output
 
 PROJECT_ROOT = Path(__file__).resolve().parent.parent
 COMMON_SH = PROJECT_ROOT / "scripts" / "bash" / "common.sh"
@@ -94,7 +95,7 @@ def test_setup_plan_creates_plan_when_missing(plan_repo: Path) -> None:
     )
     assert result.returncode == 0, result.stderr
     data = json.loads(result.stdout)
-    plan_path = Path(data["IMPL_PLAN"])
+    plan_path = path_from_bash_output(data["IMPL_PLAN"])
     assert plan_path.is_file()
     # Template content should be present
     content = plan_path.read_text(encoding="utf-8")

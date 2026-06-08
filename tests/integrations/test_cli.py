@@ -3,6 +3,8 @@
 import io
 import json
 import os
+from pathlib import Path
+from unittest.mock import patch
 
 import pytest
 import yaml
@@ -569,7 +571,6 @@ class TestInitIntegrationFlag:
         assert ".specify/scripts/bash/nested/deep.sh" in output
         assert ".specify/templates/plan-template.md" in output
 
-    @pytest.mark.skipif(os.name == "nt", reason="POSIX mode bits are not stable on Windows")
     def test_shared_template_writes_are_not_world_writable(self, tmp_path):
         """Shared template writes use a safe default mode instead of chmod 666."""
         from specify_cli.shared_infra import install_shared_infra
@@ -582,18 +583,39 @@ class TestInitIntegrationFlag:
         templates_src.mkdir(parents=True)
         (templates_src / "plan-template.md").write_text("# plan\n", encoding="utf-8")
 
-        install_shared_infra(
-            project,
-            "sh",
-            version="test",
-            core_pack=core_pack,
-            repo_root=tmp_path / "unused",
-            console=_NoopConsole(),
-            force=True,
-        )
+        patch_kwargs = {"autospec": True, "wraps": Path.chmod}
+
+        with patch("specify_cli.shared_infra.Path.chmod", **patch_kwargs) as chmod_spy:
+            install_shared_infra(
+                project,
+                "sh",
+                version="test",
+                core_pack=core_pack,
+                repo_root=tmp_path / "unused",
+                console=_NoopConsole(),
+                force=True,
+            )
 
         written = project / ".specify" / "templates" / "plan-template.md"
-        assert written.stat().st_mode & 0o777 == 0o644
+        if os.name == "nt":
+            assert written.is_file()
+
+            def chmod_call_matches(call) -> bool:
+                target = call.args[0] if call.args else call.kwargs.get("self")
+                mode = call.args[1] if len(call.args) > 1 else call.kwargs.get("mode")
+                if target is None or mode != 0o644:
+                    return False
+                target_path = Path(target)
+                if target_path.parent != written.parent:
+                    return False
+                return target_path.name == written.name or target_path.name.startswith(f".{written.name}.")
+
+            assert any(
+                chmod_call_matches(call)
+                for call in chmod_spy.call_args_list
+            )
+        else:
+            assert written.stat().st_mode & 0o777 == 0o644
 
     def test_shared_infra_no_warning_when_forced(self, tmp_path, capsys):
         """No skip warning when force=True (all files overwritten)."""
